@@ -1,5 +1,5 @@
 use crate::id::{identify_bytes, parse as parse_id, Id, ParseError as IdParseError};
-use std::fmt;
+use std::fmt::{self, Write};
 
 pub const TIMESTAMP_FORMAT: &str = "%Y-%m-%dT%H:%M:%SZ";
 
@@ -56,56 +56,68 @@ impl Entry {
     }
 
     fn format_with(&self, indent_width: usize) -> String {
-        let indent = " ".repeat(self.depth * indent_width);
-        let mode = self
-            .mode
-            .map(format_mode)
-            .unwrap_or_else(|| "-".to_string());
-        let timestamp = self.timestamp.clone().unwrap_or_else(|| "-".to_string());
-        let size = self
-            .size
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "-".to_string());
-        let mut parts = vec![
-            format!("{indent}{mode}"),
-            timestamp,
-            size,
-            format_name(&self.name, self.is_sequence),
-        ];
+        let mut out = String::with_capacity(128 + self.name.len());
+        self.write_format_with(&mut out, indent_width);
+        out
+    }
+
+    fn write_format_with(&self, out: &mut String, indent_width: usize) {
+        for _ in 0..self.depth * indent_width {
+            out.push(' ');
+        }
+        if let Some(mode) = self.mode {
+            write_mode(out, mode);
+        } else {
+            out.push('-');
+        }
+
+        out.push(' ');
+        out.push_str(self.timestamp.as_deref().unwrap_or("-"));
+
+        out.push(' ');
+        if let Some(size) = self.size {
+            write!(out, "{size}").expect("write to string");
+        } else {
+            out.push('-');
+        }
+
+        out.push(' ');
+        write_name(out, &self.name, self.is_sequence);
 
         if let Some(target) = &self.target {
-            parts.push("->".to_string());
-            parts.push(format_name(target, false));
+            out.push_str(" -> ");
+            write_name(out, target, false);
         } else if self.hard_link != 0 {
-            parts.push(if self.hard_link < 0 {
-                "->".to_string()
+            out.push(' ');
+            if self.hard_link < 0 {
+                out.push_str("->");
             } else {
-                format!("->{}", self.hard_link)
-            });
+                write!(out, "->{}", self.hard_link).expect("write to string");
+            }
         } else {
             match self.flow_direction {
                 FlowDirection::Outbound => {
-                    parts.push("->".to_string());
-                    parts.push(self.flow_target.clone().unwrap_or_default());
+                    out.push_str(" -> ");
+                    out.push_str(self.flow_target.as_deref().unwrap_or_default());
                 }
                 FlowDirection::Inbound => {
-                    parts.push("<-".to_string());
-                    parts.push(self.flow_target.clone().unwrap_or_default());
+                    out.push_str(" <- ");
+                    out.push_str(self.flow_target.as_deref().unwrap_or_default());
                 }
                 FlowDirection::Bidirectional => {
-                    parts.push("<>".to_string());
-                    parts.push(self.flow_target.clone().unwrap_or_default());
+                    out.push_str(" <> ");
+                    out.push_str(self.flow_target.as_deref().unwrap_or_default());
                 }
                 FlowDirection::None => {}
             }
         }
 
-        parts.push(
-            self.c4id
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "-".to_string()),
-        );
-        parts.join(" ")
+        out.push(' ');
+        if let Some(id) = self.c4id {
+            write!(out, "{id}").expect("write to string");
+        } else {
+            out.push('-');
+        }
     }
 }
 
@@ -158,11 +170,11 @@ impl Manifest {
             .iter()
             .filter(|entry| entry.depth == min_depth)
             .collect();
-        entries.sort_by_key(|entry| natural_key(&entry.name));
+        entries.sort_by_cached_key(|entry| natural_key(&entry.name));
 
         let mut out = String::new();
         for entry in entries {
-            out.push_str(&entry.canonical());
+            entry.write_format_with(&mut out, 0);
             out.push('\n');
         }
         out
@@ -311,6 +323,12 @@ pub fn parse_entry(line: &str, line_no: usize) -> Result<Entry, ParseError> {
 }
 
 pub fn format_mode(mode: u32) -> String {
+    let mut out = String::with_capacity(10);
+    write_mode(&mut out, mode);
+    out
+}
+
+fn write_mode(out: &mut String, mode: u32) {
     let kind = match mode & 0o170000 {
         0o040000 => 'd',
         0o120000 => 'l',
@@ -320,14 +338,12 @@ pub fn format_mode(mode: u32) -> String {
         0o020000 => 'c',
         _ => '-',
     };
-    let mut out = String::with_capacity(10);
     out.push(kind);
     for shift in [6, 3, 0] {
         out.push(if mode & (0o4 << shift) != 0 { 'r' } else { '-' });
         out.push(if mode & (0o2 << shift) != 0 { 'w' } else { '-' });
         out.push(if mode & (0o1 << shift) != 0 { 'x' } else { '-' });
     }
-    out
 }
 
 fn parse_mode(mode: &str) -> Result<u32, ParseError> {
@@ -363,18 +379,28 @@ fn parse_mode(mode: &str) -> Result<u32, ParseError> {
     Ok(out)
 }
 
-fn format_name(name: &str, is_sequence: bool) -> String {
+fn write_name(out: &mut String, name: &str, is_sequence: bool) {
     if is_sequence {
-        return format!("[{name}]");
+        out.push('[');
+        out.push_str(name);
+        out.push(']');
+        return;
     }
     if name.is_empty()
         || name
             .bytes()
             .any(|b| b.is_ascii_whitespace() || matches!(b, b'"' | b'\\'))
     {
-        format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""))
+        out.push('"');
+        for ch in name.chars() {
+            if matches!(ch, '\\' | '"') {
+                out.push('\\');
+            }
+            out.push(ch);
+        }
+        out.push('"');
     } else {
-        name.to_string()
+        out.push_str(name);
     }
 }
 

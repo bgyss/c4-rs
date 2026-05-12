@@ -1,4 +1,4 @@
-use crate::sha512::sha512;
+use crate::sha512::{sha512, sha512_reader};
 use std::cmp::Ordering;
 use std::fmt;
 use std::io::{self, Read};
@@ -109,9 +109,7 @@ pub fn identify_bytes(data: &[u8]) -> Id {
 }
 
 pub fn identify<R: Read>(mut reader: R) -> io::Result<Id> {
-    let mut data = Vec::new();
-    reader.read_to_end(&mut data)?;
-    Ok(identify_bytes(&data))
+    Ok(Id(sha512_reader(&mut reader)?))
 }
 
 pub fn parse(source: &str) -> Result<Id, ParseError> {

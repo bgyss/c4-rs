@@ -1,3 +1,6 @@
+use std::io::{self, Read};
+
+#[cfg(not(target_vendor = "apple"))]
 const H0: [u64; 8] = [
     0x6a09e667f3bcc908,
     0xbb67ae8584caa73b,
@@ -9,6 +12,7 @@ const H0: [u64; 8] = [
     0x5be0cd19137e2179,
 ];
 
+#[cfg(not(target_vendor = "apple"))]
 const K: [u64; 80] = [
     0x428a2f98d728ae22,
     0x7137449123ef65cd,
@@ -92,37 +96,44 @@ const K: [u64; 80] = [
     0x6c44198c4a475817,
 ];
 
+#[cfg(not(target_vendor = "apple"))]
 #[inline]
 fn ch(x: u64, y: u64, z: u64) -> u64 {
     (x & y) ^ (!x & z)
 }
 
+#[cfg(not(target_vendor = "apple"))]
 #[inline]
 fn maj(x: u64, y: u64, z: u64) -> u64 {
     (x & y) ^ (x & z) ^ (y & z)
 }
 
+#[cfg(not(target_vendor = "apple"))]
 #[inline]
 fn big_sigma0(x: u64) -> u64 {
     x.rotate_right(28) ^ x.rotate_right(34) ^ x.rotate_right(39)
 }
 
+#[cfg(not(target_vendor = "apple"))]
 #[inline]
 fn big_sigma1(x: u64) -> u64 {
     x.rotate_right(14) ^ x.rotate_right(18) ^ x.rotate_right(41)
 }
 
+#[cfg(not(target_vendor = "apple"))]
 #[inline]
 fn small_sigma0(x: u64) -> u64 {
     x.rotate_right(1) ^ x.rotate_right(8) ^ (x >> 7)
 }
 
+#[cfg(not(target_vendor = "apple"))]
 #[inline]
 fn small_sigma1(x: u64) -> u64 {
     x.rotate_right(19) ^ x.rotate_right(61) ^ (x >> 6)
 }
 
-pub fn sha512(data: &[u8]) -> [u8; 64] {
+#[cfg(not(target_vendor = "apple"))]
+fn sha512_fallback(data: &[u8]) -> [u8; 64] {
     let mut h = H0;
     let mut msg = data.to_vec();
     let bit_len = (msg.len() as u128) * 8;
@@ -186,6 +197,112 @@ pub fn sha512(data: &[u8]) -> [u8; 64] {
         out[i * 8..i * 8 + 8].copy_from_slice(&word.to_be_bytes());
     }
     out
+}
+
+pub fn sha512(data: &[u8]) -> [u8; 64] {
+    platform::sha512(data)
+}
+
+pub fn sha512_reader<R: Read>(reader: R) -> io::Result<[u8; 64]> {
+    platform::sha512_reader(reader)
+}
+
+#[cfg(target_vendor = "apple")]
+mod platform {
+    use std::ffi::c_void;
+    use std::io::{self, Read};
+    use std::mem::MaybeUninit;
+    use std::os::raw::{c_int, c_uchar, c_uint};
+
+    #[repr(C)]
+    struct CcSha512Ctx {
+        count: [u64; 2],
+        hash: [u64; 8],
+        wbuf: [u64; 16],
+    }
+
+    #[link(name = "System")]
+    unsafe extern "C" {
+        fn CC_SHA512_Init(context: *mut CcSha512Ctx) -> c_int;
+        fn CC_SHA512_Update(context: *mut CcSha512Ctx, data: *const c_void, len: c_uint) -> c_int;
+        fn CC_SHA512_Final(md: *mut c_uchar, context: *mut CcSha512Ctx) -> c_int;
+    }
+
+    pub fn sha512(data: &[u8]) -> [u8; 64] {
+        let mut hasher = Sha512::new();
+        hasher.update(data);
+        hasher.finalize()
+    }
+
+    pub fn sha512_reader<R: Read>(mut reader: R) -> io::Result<[u8; 64]> {
+        let mut hasher = Sha512::new();
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let read = reader.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+        Ok(hasher.finalize())
+    }
+
+    struct Sha512 {
+        context: CcSha512Ctx,
+    }
+
+    impl Sha512 {
+        fn new() -> Self {
+            let mut context = MaybeUninit::<CcSha512Ctx>::uninit();
+            // SAFETY: CommonCrypto initializes the full context on success.
+            let ok = unsafe { CC_SHA512_Init(context.as_mut_ptr()) };
+            assert_eq!(ok, 1, "CC_SHA512_Init failed");
+            // SAFETY: CC_SHA512_Init returned success, so the context is initialized.
+            let context = unsafe { context.assume_init() };
+            Self { context }
+        }
+
+        fn update(&mut self, mut data: &[u8]) {
+            while !data.is_empty() {
+                let len = data.len().min(c_uint::MAX as usize);
+                let chunk = &data[..len];
+                // SAFETY: chunk points to len bytes that remain alive for the call.
+                let ok = unsafe {
+                    CC_SHA512_Update(
+                        &mut self.context,
+                        chunk.as_ptr().cast::<c_void>(),
+                        len as c_uint,
+                    )
+                };
+                assert_eq!(ok, 1, "CC_SHA512_Update failed");
+                data = &data[len..];
+            }
+        }
+
+        fn finalize(mut self) -> [u8; 64] {
+            let mut out = [0u8; 64];
+            // SAFETY: out has CC_SHA512_DIGEST_LENGTH bytes and context is initialized.
+            let ok = unsafe { CC_SHA512_Final(out.as_mut_ptr(), &mut self.context) };
+            assert_eq!(ok, 1, "CC_SHA512_Final failed");
+            out
+        }
+    }
+}
+
+#[cfg(not(target_vendor = "apple"))]
+mod platform {
+    use super::sha512_fallback;
+    use std::io::{self, Read};
+
+    pub fn sha512(data: &[u8]) -> [u8; 64] {
+        sha512_fallback(data)
+    }
+
+    pub fn sha512_reader<R: Read>(mut reader: R) -> io::Result<[u8; 64]> {
+        let mut data = Vec::new();
+        reader.read_to_end(&mut data)?;
+        Ok(sha512_fallback(&data))
+    }
 }
 
 #[cfg(test)]
