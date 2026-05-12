@@ -3,6 +3,9 @@ use crate::id::{identify, Id};
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::thread;
+
+const PARALLEL_HASH_THRESHOLD: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ScanMode {
@@ -58,12 +61,18 @@ impl Generator {
             .collect::<io::Result<Vec<_>>>()?;
         children.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
 
-        let mut child_manifest = Manifest::new();
+        let mut child_infos = Vec::with_capacity(children.len());
         for child in children {
             if self.excluded(&child) {
                 continue;
             }
             let meta = fs::symlink_metadata(&child)?;
+            child_infos.push((child, meta));
+        }
+
+        let file_entries = self.file_entries_for(&child_infos, depth)?;
+        let mut child_manifest = Manifest::with_capacity(child_infos.len());
+        for (idx, (child, meta)) in child_infos.into_iter().enumerate() {
             if meta.is_dir() {
                 let id = self.scan_dir(&child, depth + 1, manifest)?;
                 let mut entry = self.base_entry(&child, &meta, depth);
@@ -72,12 +81,78 @@ impl Generator {
                 child_manifest.add_entry(entry.clone());
                 manifest.add_entry(entry);
             } else {
-                let entry = self.entry_for(&child, &meta, depth)?;
+                let entry = file_entries[idx]
+                    .clone()
+                    .expect("file entry should be precomputed");
                 child_manifest.add_entry(entry.clone());
                 manifest.add_entry(entry);
             }
         }
         Ok(child_manifest.compute_c4_id())
+    }
+
+    fn file_entries_for(
+        &self,
+        child_infos: &[(PathBuf, fs::Metadata)],
+        depth: usize,
+    ) -> io::Result<Vec<Option<Entry>>> {
+        let mut entries: Vec<Option<Entry>> = std::iter::repeat_with(|| None)
+            .take(child_infos.len())
+            .collect();
+        let files: Vec<_> = child_infos
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, meta))| !meta.is_dir())
+            .collect();
+
+        if files.is_empty() {
+            return Ok(entries);
+        }
+
+        let total_file_bytes: u64 = files.iter().map(|(_, (_, meta))| meta.len()).sum();
+        let worker_count = thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1)
+            .min(files.len());
+        if self.mode != ScanMode::Full
+            || worker_count <= 1
+            || total_file_bytes < PARALLEL_HASH_THRESHOLD
+        {
+            for (idx, (path, meta)) in files {
+                entries[idx] = Some(self.entry_for(path, meta, depth)?);
+            }
+            return Ok(entries);
+        }
+
+        let chunk_size = (files.len() + worker_count - 1) / worker_count;
+        let chunk_results = thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for chunk in files.chunks(chunk_size) {
+                handles.push(scope.spawn(move || -> io::Result<Vec<(usize, Entry)>> {
+                    let mut chunk_entries = Vec::with_capacity(chunk.len());
+                    for (idx, (path, meta)) in chunk {
+                        chunk_entries.push((*idx, self.entry_for(path, meta, depth)?));
+                    }
+                    Ok(chunk_entries)
+                }));
+            }
+
+            let mut chunk_results = Vec::with_capacity(handles.len());
+            for handle in handles {
+                let result = handle.join().map_err(|_| {
+                    io::Error::new(io::ErrorKind::Other, "file hashing worker panicked")
+                })??;
+                chunk_results.push(result);
+            }
+            Ok::<_, io::Error>(chunk_results)
+        })?;
+
+        for chunk in chunk_results {
+            for (idx, entry) in chunk {
+                entries[idx] = Some(entry);
+            }
+        }
+        Ok(entries)
     }
 
     fn excluded(&self, path: &Path) -> bool {

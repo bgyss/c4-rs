@@ -1,6 +1,6 @@
 use std::io::{self, Read};
 
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(any(test, not(target_vendor = "apple")))]
 const H0: [u64; 8] = [
     0x6a09e667f3bcc908,
     0xbb67ae8584caa73b,
@@ -12,7 +12,7 @@ const H0: [u64; 8] = [
     0x5be0cd19137e2179,
 ];
 
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(any(test, not(target_vendor = "apple")))]
 const K: [u64; 80] = [
     0x428a2f98d728ae22,
     0x7137449123ef65cd,
@@ -96,54 +96,114 @@ const K: [u64; 80] = [
     0x6c44198c4a475817,
 ];
 
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(any(test, not(target_vendor = "apple")))]
 #[inline]
 fn ch(x: u64, y: u64, z: u64) -> u64 {
     (x & y) ^ (!x & z)
 }
 
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(any(test, not(target_vendor = "apple")))]
 #[inline]
 fn maj(x: u64, y: u64, z: u64) -> u64 {
     (x & y) ^ (x & z) ^ (y & z)
 }
 
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(any(test, not(target_vendor = "apple")))]
 #[inline]
 fn big_sigma0(x: u64) -> u64 {
     x.rotate_right(28) ^ x.rotate_right(34) ^ x.rotate_right(39)
 }
 
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(any(test, not(target_vendor = "apple")))]
 #[inline]
 fn big_sigma1(x: u64) -> u64 {
     x.rotate_right(14) ^ x.rotate_right(18) ^ x.rotate_right(41)
 }
 
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(any(test, not(target_vendor = "apple")))]
 #[inline]
 fn small_sigma0(x: u64) -> u64 {
     x.rotate_right(1) ^ x.rotate_right(8) ^ (x >> 7)
 }
 
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(any(test, not(target_vendor = "apple")))]
 #[inline]
 fn small_sigma1(x: u64) -> u64 {
     x.rotate_right(19) ^ x.rotate_right(61) ^ (x >> 6)
 }
 
-#[cfg(not(target_vendor = "apple"))]
-fn sha512_fallback(data: &[u8]) -> [u8; 64] {
-    let mut h = H0;
-    let mut msg = data.to_vec();
-    let bit_len = (msg.len() as u128) * 8;
-    msg.push(0x80);
-    while (msg.len() % 128) != 112 {
-        msg.push(0);
-    }
-    msg.extend_from_slice(&bit_len.to_be_bytes());
+#[cfg(any(test, not(target_vendor = "apple")))]
+struct SoftwareSha512 {
+    h: [u64; 8],
+    bit_len: u128,
+    buffer: [u8; 128],
+    buffer_len: usize,
+}
 
-    for chunk in msg.chunks_exact(128) {
+#[cfg(any(test, not(target_vendor = "apple")))]
+impl SoftwareSha512 {
+    fn new() -> Self {
+        Self {
+            h: H0,
+            bit_len: 0,
+            buffer: [0; 128],
+            buffer_len: 0,
+        }
+    }
+
+    fn update(&mut self, mut data: &[u8]) {
+        self.bit_len = self.bit_len.wrapping_add((data.len() as u128) * 8);
+
+        if self.buffer_len != 0 {
+            let needed = 128 - self.buffer_len;
+            let take = needed.min(data.len());
+            self.buffer[self.buffer_len..self.buffer_len + take].copy_from_slice(&data[..take]);
+            self.buffer_len += take;
+            data = &data[take..];
+
+            if self.buffer_len == 128 {
+                let block = self.buffer;
+                self.process_block(&block);
+                self.buffer_len = 0;
+            }
+        }
+
+        while data.len() >= 128 {
+            let block: &[u8; 128] = data[..128].try_into().expect("block is 128 bytes");
+            self.process_block(block);
+            data = &data[128..];
+        }
+
+        if !data.is_empty() {
+            self.buffer[..data.len()].copy_from_slice(data);
+            self.buffer_len = data.len();
+        }
+    }
+
+    fn finalize(mut self) -> [u8; 64] {
+        self.buffer[self.buffer_len] = 0x80;
+        self.buffer_len += 1;
+
+        if self.buffer_len > 112 {
+            self.buffer[self.buffer_len..].fill(0);
+            let block = self.buffer;
+            self.process_block(&block);
+            self.buffer_len = 0;
+        }
+
+        self.buffer[self.buffer_len..112].fill(0);
+        self.buffer[112..].copy_from_slice(&self.bit_len.to_be_bytes());
+        let block = self.buffer;
+        self.process_block(&block);
+
+        let mut out = [0u8; 64];
+        for (i, word) in self.h.iter().enumerate() {
+            out[i * 8..i * 8 + 8].copy_from_slice(&word.to_be_bytes());
+        }
+        out
+    }
+
+    fn process_block(&mut self, chunk: &[u8; 128]) {
         let mut w = [0u64; 80];
         for (i, word) in w.iter_mut().enumerate().take(16) {
             let start = i * 8;
@@ -156,14 +216,14 @@ fn sha512_fallback(data: &[u8]) -> [u8; 64] {
                 .wrapping_add(w[i - 16]);
         }
 
-        let mut a = h[0];
-        let mut b = h[1];
-        let mut c = h[2];
-        let mut d = h[3];
-        let mut e = h[4];
-        let mut f = h[5];
-        let mut g = h[6];
-        let mut hh = h[7];
+        let mut a = self.h[0];
+        let mut b = self.h[1];
+        let mut c = self.h[2];
+        let mut d = self.h[3];
+        let mut e = self.h[4];
+        let mut f = self.h[5];
+        let mut g = self.h[6];
+        let mut hh = self.h[7];
 
         for i in 0..80 {
             let t1 = hh
@@ -182,21 +242,15 @@ fn sha512_fallback(data: &[u8]) -> [u8; 64] {
             a = t1.wrapping_add(t2);
         }
 
-        h[0] = h[0].wrapping_add(a);
-        h[1] = h[1].wrapping_add(b);
-        h[2] = h[2].wrapping_add(c);
-        h[3] = h[3].wrapping_add(d);
-        h[4] = h[4].wrapping_add(e);
-        h[5] = h[5].wrapping_add(f);
-        h[6] = h[6].wrapping_add(g);
-        h[7] = h[7].wrapping_add(hh);
+        self.h[0] = self.h[0].wrapping_add(a);
+        self.h[1] = self.h[1].wrapping_add(b);
+        self.h[2] = self.h[2].wrapping_add(c);
+        self.h[3] = self.h[3].wrapping_add(d);
+        self.h[4] = self.h[4].wrapping_add(e);
+        self.h[5] = self.h[5].wrapping_add(f);
+        self.h[6] = self.h[6].wrapping_add(g);
+        self.h[7] = self.h[7].wrapping_add(hh);
     }
-
-    let mut out = [0u8; 64];
-    for (i, word) in h.iter().enumerate() {
-        out[i * 8..i * 8 + 8].copy_from_slice(&word.to_be_bytes());
-    }
-    out
 }
 
 pub fn sha512(data: &[u8]) -> [u8; 64] {
@@ -291,23 +345,32 @@ mod platform {
 
 #[cfg(not(target_vendor = "apple"))]
 mod platform {
-    use super::sha512_fallback;
+    use super::SoftwareSha512;
     use std::io::{self, Read};
 
     pub fn sha512(data: &[u8]) -> [u8; 64] {
-        sha512_fallback(data)
+        let mut hasher = SoftwareSha512::new();
+        hasher.update(data);
+        hasher.finalize()
     }
 
     pub fn sha512_reader<R: Read>(mut reader: R) -> io::Result<[u8; 64]> {
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data)?;
-        Ok(sha512_fallback(&data))
+        let mut hasher = SoftwareSha512::new();
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let read = reader.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+        Ok(hasher.finalize())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::sha512;
+    use super::{sha512, SoftwareSha512};
 
     #[test]
     fn sha512_empty_vector() {
@@ -316,6 +379,23 @@ mod tests {
             hex(&digest),
             "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e"
         );
+    }
+
+    #[test]
+    fn software_sha512_matches_vectors() {
+        let mut hasher = SoftwareSha512::new();
+        hasher.update(b"abc");
+        assert_eq!(
+            hex(&hasher.finalize()),
+            "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+        );
+
+        let data = vec![b'x'; 1024 * 1024 + 17];
+        let mut streamed = SoftwareSha512::new();
+        for chunk in data.chunks(8191) {
+            streamed.update(chunk);
+        }
+        assert_eq!(streamed.finalize(), sha512(&data));
     }
 
     fn hex(bytes: &[u8]) -> String {

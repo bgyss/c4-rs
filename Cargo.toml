@@ -1,6 +1,6 @@
 [package]
 name = "c4-rs"
-version = "1.0.12"
+version = "0.0.1"
 edition = "2021"
 rust-version = "1.70"
 description = "Rust port of the C4 content identification and c4m tooling"
@@ -15,3 +15,7 @@ name = "c4-rs"
 path = "src/main.rs"
 
 [dependencies]
+
+[profile.release]
+codegen-units = 1
+lto = "thin"

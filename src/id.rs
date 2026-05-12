@@ -79,20 +79,23 @@ impl PartialOrd for Id {
 
 impl fmt::Display for Id {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut number = self.0;
+        let mut number = [0u64; 8];
+        for (idx, chunk) in self.0.chunks_exact(8).enumerate() {
+            number[idx] = u64::from_be_bytes(chunk.try_into().expect("chunk is 8 bytes"));
+        }
         let mut encoded = [b'1'; ID_LEN];
         encoded[0] = b'c';
         encoded[1] = b'4';
 
         for slot in (2..ID_LEN).rev() {
-            let mut rem: u16 = 0;
+            let mut rem: u128 = 0;
             let mut any = false;
-            for byte in &mut number {
-                let value = (rem << 8) + (*byte as u16);
+            for limb in &mut number {
+                let value = (rem << 64) | (*limb as u128);
                 let q = value / 58;
                 rem = value % 58;
-                *byte = q as u8;
-                any |= *byte != 0;
+                *limb = q as u64;
+                any |= *limb != 0;
             }
             encoded[slot] = CHARSET[rem as usize];
             if !any {

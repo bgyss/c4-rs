@@ -9,7 +9,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-const VERSION: &str = "1.0.12";
+const VERSION: &str = "0.0.1";
 
 fn main() {
     if let Err(err) = run() {

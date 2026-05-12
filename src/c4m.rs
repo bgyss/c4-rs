@@ -156,6 +156,12 @@ impl Manifest {
         }
     }
 
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            entries: Vec::with_capacity(capacity),
+        }
+    }
+
     pub fn add_entry(&mut self, entry: Entry) {
         self.entries.push(entry);
     }
@@ -172,7 +178,7 @@ impl Manifest {
             .collect();
         entries.sort_by_cached_key(|entry| natural_key(&entry.name));
 
-        let mut out = String::new();
+        let mut out = String::with_capacity(entries.len() * 128);
         for entry in entries {
             entry.write_format_with(&mut out, 0);
             out.push('\n');

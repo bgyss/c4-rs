@@ -42,7 +42,7 @@ fn run_env(args: &[&str], env_key: &str, env_value: &Path) -> String {
 
 #[test]
 fn version_and_stdin_id_work() {
-    assert!(run(&["version"]).starts_with("c4-rs 1.0."));
+    assert_eq!(run(&["version"]), "c4-rs 0.0.1\n");
 
     let mut child = Command::new(bin())
         .arg("id")
