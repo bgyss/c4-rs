@@ -1,0 +1,17 @@
+[package]
+name = "c4-rs"
+version = "1.0.12"
+edition = "2021"
+rust-version = "1.70"
+description = "Rust port of the C4 content identification and c4m tooling"
+license = "Apache-2.0"
+
+[lib]
+name = "c4"
+path = "src/lib.rs"
+
+[[bin]]
+name = "c4-rs"
+path = "src/main.rs"
+
+[dependencies]

@@ -1,0 +1,17 @@
+[tools]
+rust = "1.94.0"
+
+[env]
+MISE_DISABLE_VERSION_CHECK = "1"
+
+[tasks.build]
+description = "Build the c4-rs CLI and library with rustup-managed Cargo"
+run = "env -u NIX_CFLAGS_COMPILE -u NIX_LDFLAGS -u NIX_CC -u NIX_CC_WRAPPER_TARGET_HOST_arm64_apple_darwin -u NIX_BINTOOLS -u NIX_BINTOOLS_WRAPPER_TARGET_HOST_arm64_apple_darwin -u NIX_ENFORCE_NO_NATIVE DEVELOPER_DIR=/Library/Developer/CommandLineTools SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/cc cargo build"
+
+[tasks.test]
+description = "Run the Rust unit and integration tests with rustup-managed Cargo"
+run = "env -u NIX_CFLAGS_COMPILE -u NIX_LDFLAGS -u NIX_CC -u NIX_CC_WRAPPER_TARGET_HOST_arm64_apple_darwin -u NIX_BINTOOLS -u NIX_BINTOOLS_WRAPPER_TARGET_HOST_arm64_apple_darwin -u NIX_ENFORCE_NO_NATIVE DEVELOPER_DIR=/Library/Developer/CommandLineTools SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/cc cargo test"
+
+[tasks.check]
+description = "Run all verification checks"
+depends = ["build", "test"]
